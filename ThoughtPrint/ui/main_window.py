@@ -1,8 +1,9 @@
 import sys
 from PyQt6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QLineEdit, QMessageBox
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QMessageBox, QSizePolicy, QLabel, QStyleOption, QStyle
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QObject, QThread
+from PyQt6.QtCore import Qt, pyqtSignal, QObject, QThread, QSize
+from PyQt6.QtGui import QIcon, QPainter
 
 # Assuming settings_dialog and other modules are in expected locations
 try:
@@ -86,13 +87,55 @@ class MainWindow(QWidget):
         self.last_input_text = "" # To store input text during processing
         self.setWindowTitle("Input") # Title for this widget if shown standalone
         
-        layout = QVBoxLayout(self)
+        # Main vertical layout
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(5, 5, 5, 5) # Small margins
+        main_layout.setSpacing(5)
+
+        # Horizontal layout for the custom title bar
+        title_bar_layout = QHBoxLayout()
+        title_bar_layout.setContentsMargins(0, 0, 0, 0) # No margins for the title bar itself
+        title_bar_layout.setSpacing(5)
+
+        self.title_label = QLabel(" ") # Window Title
+        self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents) # Allow clicks to pass through to parent for dragging
+        title_bar_layout.addWidget(self.title_label)
+
+        title_bar_layout.addStretch(1) # Pushes buttons to the right
+
+        self.pin_button = QPushButton("") # No text
+        self.pin_button.setCheckable(True)
+        self.pin_button.setChecked(True)
+        self.pin_button.setToolTip("Toggle Always on Top")
+        self.pin_button.setFixedSize(QSize(28, 22)) # Adjust size for icon
+        self.pin_button.setIconSize(QSize(16,16)) # Adjust icon size
+        self.update_pin_button_appearance(True) # Set initial icon
+        self.pin_button.clicked.connect(self.toggle_pin)
+        title_bar_layout.addWidget(self.pin_button)
+
+        self.close_button = QPushButton() # No text, will use icon
+        self.close_button.setToolTip("Close Application")
+        close_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DialogCloseButton)
+        self.close_button.setIcon(close_icon)
+        self.close_button.setFixedSize(QSize(28, 22)) # Adjust size for icon
+        self.close_button.setIconSize(QSize(16,16)) # Adjust icon size
+        self.close_button.clicked.connect(self.close_app)
+        # Remove custom stylesheet for normal color
+        self.close_button.setStyleSheet("QPushButton { border: none; background: transparent; }") # Make it flat
+        title_bar_layout.addWidget(self.close_button)
+        
+        main_layout.addLayout(title_bar_layout)
+
         self.input_line_edit = QLineEdit()
         self.input_line_edit.setPlaceholderText("Enter")
         self.input_line_edit.returnPressed.connect(self.handle_input)
-        layout.addWidget(self.input_line_edit)
+        main_layout.addWidget(self.input_line_edit)
         
-        self.setLayout(layout)
+        self.setLayout(main_layout)
+        
+        # Initial button appearance based on parent's state (if parent exists and has the state)
+        if self.parent() and hasattr(self.parent(), 'is_always_on_top'):
+            self.update_pin_button_appearance(self.parent().is_always_on_top)
         # As per requirements, the window is "mini"
         # The main_app will set the overall window geometry.
         # This widget itself doesn't need to define a fixed size here.
@@ -168,6 +211,24 @@ class MainWindow(QWidget):
         self.thread = None
         self.worker = None
 
+    def toggle_pin(self):
+        if self.parent() and hasattr(self.parent(), 'toggle_always_on_top'):
+            self.parent().toggle_always_on_top()
+            # The parent will call update_pin_button_appearance
+
+    def update_pin_button_appearance(self, is_on_top):
+        self.pin_button.setChecked(is_on_top)
+        if is_on_top:
+            self.pin_button.setText("📌") # Unicode pin character
+            # self.pin_button.setIcon(QIcon("path/to/pin_icon.png")) # Example for custom icon
+        else:
+            self.pin_button.setText("⚪") # Unicode circle character (placeholder for unpinned)
+            # self.pin_button.setIcon(QIcon("path/to/unpin_icon.png")) # Example for custom icon
+
+    def close_app(self):
+        if self.parent():
+            self.parent().close() # Call close on the QMainWindow
+        
 if __name__ == '__main__':
     # Initialize logging for standalone testing
     try:
