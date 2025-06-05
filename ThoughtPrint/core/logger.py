@@ -35,10 +35,10 @@ class AppendOnFileHandler(logging.Handler):
     terminator = '\n'
 class FileLogger:
     """
-    Centralized logging system that outputs to files instead of stdout/stderr.
+    Centralized logging system that outputs to files and optionally to console.
     """
     
-    def __init__(self, log_dir=None):
+    def __init__(self, log_dir=None, enable_console=None):
         if log_dir is None:
             # Use the "logs" subdirectory in the current working directory for logs
             log_dir = Path.cwd() / "logs"
@@ -53,47 +53,108 @@ class FileLogger:
         self.app_log_file = log_dir / f"ThoughtPrint_app_{timestamp}.txt"
         self.error_log_file = log_dir / f"ThoughtPrint_error_{timestamp}.txt"
         
+        # Determine if console logging should be enabled
+        if enable_console is None:
+            self.enable_console = self._has_console()
+        else:
+            self.enable_console = enable_console
+        
+        # Store original stdout/stderr before any redirection
+        self.original_stdout = sys.stdout
+        self.original_stderr = sys.stderr
+        
         # Set up loggers
         self._setup_loggers()
         
         # Redirect stdout and stderr
         self._redirect_streams()
     
+    def _has_console(self):
+        """
+        Check if a console is available for output.
+        Returns False if running from .pyw file or in a GUI-only environment.
+        """
+        try:
+            # Check if we're running from a .pyw file (no console)
+            if sys.argv[0].endswith('.pyw'):
+                return False
+            
+            # Check if stdout is connected to a terminal/console
+            if hasattr(sys.stdout, 'isatty') and sys.stdout.isatty():
+                return True
+            
+            # On Windows, check if we have a console window
+            if os.name == 'nt':
+                try:
+                    import ctypes
+                    # GetConsoleWindow returns 0 if no console is attached
+                    return ctypes.windll.kernel32.GetConsoleWindow() != 0
+                except:
+                    pass
+            
+            # Default to True if we can't determine (better to have console output than not)
+            return True
+        except:
+            return False
+    
     def _setup_loggers(self):
         """Set up the logging configuration."""
         # Create formatters
-        formatter = logging.Formatter(
+        file_formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        
+        # Console formatter (simpler, no timestamp for cleaner console output)
+        console_formatter = logging.Formatter(
+            '[%(levelname)s] %(name)s: %(message)s'
         )
 
         # App logger (INFO and above)
         self.app_logger = logging.getLogger('ThoughtPrint.App')
         self.app_logger.setLevel(logging.INFO)
         
+        # File handler for app logger
         app_handler = AppendOnFileHandler(self.app_log_file, encoding='utf-8')
-        app_handler.setFormatter(formatter)
+        app_handler.setFormatter(file_formatter)
         self.app_logger.addHandler(app_handler)
+        
+        # Console handler for app logger (if console is available)
+        if self.enable_console:
+            console_handler = logging.StreamHandler(self.original_stdout)
+            console_handler.setFormatter(console_formatter)
+            console_handler.setLevel(logging.INFO)
+            self.app_logger.addHandler(console_handler)
         
         # Error logger (WARNING and above)
         self.error_logger = logging.getLogger('ThoughtPrint.Error')
         self.error_logger.setLevel(logging.WARNING)
         
+        # File handler for error logger
         error_handler = AppendOnFileHandler(self.error_log_file, encoding='utf-8')
-        error_handler.setFormatter(formatter)
+        error_handler.setFormatter(file_formatter)
         self.error_logger.addHandler(error_handler)
+        
+        # Console handler for error logger (if console is available)
+        if self.enable_console:
+            error_console_handler = logging.StreamHandler(self.original_stderr)
+            error_console_handler.setFormatter(console_formatter)
+            error_console_handler.setLevel(logging.WARNING)
+            self.error_logger.addHandler(error_console_handler)
         
         # Prevent propagation to root logger
         self.app_logger.propagate = False
         self.error_logger.propagate = False
     
     def _redirect_streams(self):
-        """Redirect stdout and stderr to log files."""
+        """Redirect stdout and stderr to log files, but preserve console output if available."""
         # Create custom stream classes
         class LogStream:
-            def __init__(self, logger, level):
+            def __init__(self, logger, level, original_stream=None, enable_console=False):
                 self.logger = logger
                 self.level = level
+                self.original_stream = original_stream
+                self.enable_console = enable_console
                 self.buffer = ""
             
             def write(self, message):
@@ -101,16 +162,42 @@ class FileLogger:
                     # Remove trailing newlines for cleaner logging
                     clean_message = message.rstrip('\n\r')
                     if clean_message:
-                        self.logger.log(self.level, clean_message)
+                        # Only log to file handlers, not console handlers
+                        # (console handlers are added separately in _setup_loggers)
+                        for handler in self.logger.handlers:
+                            if isinstance(handler, AppendOnFileHandler):
+                                handler.emit(self.logger.makeRecord(
+                                    self.logger.name, self.level, "", 0, clean_message, (), None
+                                ))
+                        
+                        # Also write to original stream if console is enabled
+                        if self.enable_console and self.original_stream:
+                            try:
+                                self.original_stream.write(message)
+                                self.original_stream.flush()
+                            except:
+                                pass  # Ignore errors writing to console
             
             def flush(self):
-                pass
+                if self.enable_console and self.original_stream:
+                    try:
+                        self.original_stream.flush()
+                    except:
+                        pass
         
-        # Redirect stdout to app logger
-        sys.stdout = LogStream(self.app_logger, logging.INFO)
-        
-        # Redirect stderr to error logger
-        sys.stderr = LogStream(self.error_logger, logging.ERROR)
+        # Only redirect streams if console is not available
+        # If console is available, we want to preserve normal stdout/stderr behavior
+        # while still logging to files
+        if not self.enable_console:
+            # Redirect stdout to app logger (file only)
+            sys.stdout = LogStream(self.app_logger, logging.INFO)
+            
+            # Redirect stderr to error logger (file only)
+            sys.stderr = LogStream(self.error_logger, logging.ERROR)
+        else:
+            # Keep original streams but create hybrid streams that log to files AND output to console
+            sys.stdout = LogStream(self.app_logger, logging.INFO, self.original_stdout, True)
+            sys.stderr = LogStream(self.error_logger, logging.ERROR, self.original_stderr, True)
     
     def info(self, message):
         """Log an info message."""
@@ -138,10 +225,10 @@ def get_logger():
         _logger_instance = FileLogger()
     return _logger_instance
 
-def init_logging(log_dir=None):
+def init_logging(log_dir=None, enable_console=None):
     """Initialize the logging system."""
     global _logger_instance
-    _logger_instance = FileLogger(log_dir)
+    _logger_instance = FileLogger(log_dir, enable_console)
     return _logger_instance
 
 # Convenience functions for easy use throughout the app
